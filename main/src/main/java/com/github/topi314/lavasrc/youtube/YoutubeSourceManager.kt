@@ -1,5 +1,8 @@
 package com.github.topi314.lavasrc.youtube
 
+import com.github.topi314.lavalyrics.AudioLyricsManager
+import com.github.topi314.lavalyrics.lyrics.AudioLyrics
+
 import com.github.topi314.lavasearch.AudioSearchManager
 import com.github.topi314.lavasearch.result.AudioSearchResult
 import com.github.topi314.lavasearch.result.AudioText
@@ -7,12 +10,16 @@ import com.github.topi314.lavasearch.result.BasicAudioSearchResult
 import com.github.topi314.lavasearch.result.BasicAudioText
 import com.github.topi314.lavasrc.ExtendedAudioPlaylist
 import com.github.topi314.lavasrc.youtube.innertube.MusicResponsiveListItemRenderer
+import com.github.topi314.lavasrc.youtube.innertube.requestLyrics
 import com.github.topi314.lavasrc.youtube.innertube.requestMusicAutoComplete
-import com.sedmelluq.discord.lavaplayer.source.youtube.YoutubeAudioSourceManager
-import com.sedmelluq.discord.lavaplayer.source.youtube.YoutubeAudioTrack
+import com.github.topi314.lavasrc.youtube.innertube.takeFirstSearchResult
+import com.sedmelluq.discord.lavaplayer.player.AudioPlayerManager
 import com.sedmelluq.discord.lavaplayer.tools.io.HttpClientTools
 import com.sedmelluq.discord.lavaplayer.track.AudioTrack
 import com.sedmelluq.discord.lavaplayer.track.AudioTrackInfo
+import dev.schlaubi.lyrics.LyricsNotFoundException
+import dev.lavalink.youtube.YoutubeAudioSourceManager
+import dev.lavalink.youtube.track.YoutubeAudioTrack
 import org.apache.http.client.methods.HttpGet
 import java.net.URLEncoder
 import com.github.topi314.lavasrc.youtube.innertube.MusicResponsiveListItemRenderer.NavigationEndpoint.BrowseEndpoint.Configs.Config.Type as PageType
@@ -21,7 +28,7 @@ private val searchPattern = """\["([\w\s]+)",\s*\d+,\s*\[(?:\d+,?\s*)+]""".toReg
 
 private fun MusicResponsiveListItemRenderer.NavigationEndpoint.toUrl() = when {
     browseEndpoint != null -> when (browseEndpoint.browseEndpointContextSupportedConfigs.browseEndpointContextMusicConfig.pageType) {
-        PageType.MUSIC_PAGE_TYPE_ALBUM -> "https://music.youtube.com/browse/${browseEndpoint.browseId}"
+        PageType.MUSIC_PAGE_TYPE_PLAYLIST, PageType.MUSIC_PAGE_TYPE_ALBUM -> "https://music.youtube.com/browse/${browseEndpoint.browseId}"
         PageType.MUSIC_PAGE_TYPE_ARTIST -> "https://music.youtube.com/channel/${browseEndpoint.browseId}"
     }
 
@@ -30,14 +37,16 @@ private fun MusicResponsiveListItemRenderer.NavigationEndpoint.toUrl() = when {
 }
 
 class YoutubeSearchManager(
-    private val sourceManager: () -> YoutubeAudioSourceManager
-) : AudioSearchManager {
+    private val playerManager: () -> AudioPlayerManager,
+    private val region: String
+) : AudioSearchManager, AudioLyricsManager {
     companion object {
         const val SEARCH_PREFIX = "ytsearch:"
         const val MUSIC_SEARCH_PREFIX = "ytmsearch:"
         val SEARCH_TYPES = setOf(
             AudioSearchResult.Type.ALBUM,
             AudioSearchResult.Type.ARTIST,
+            AudioSearchResult.Type.PLAYLIST,
             AudioSearchResult.Type.TRACK,
             AudioSearchResult.Type.TEXT
         )
@@ -45,6 +54,20 @@ class YoutubeSearchManager(
 
     private val httpInterfaceManager = HttpClientTools.createDefaultThreadLocalManager()
     override fun getSourceName(): String = "youtube"
+
+    override fun loadLyrics(track: AudioTrack): AudioLyrics? = try {
+        httpInterfaceManager.`interface`.use {
+            val videoId = when {
+                track.sourceManager.sourceName == "youtube" -> track.info.identifier
+                track.info.isrc != null -> it.takeFirstSearchResult(track.info.isrc, region)
+                else -> it.takeFirstSearchResult("${track.info.title} - ${track.info.author}", region)
+            } ?: return@use null
+
+            it.requestLyrics(videoId)
+        }
+    } catch (e: LyricsNotFoundException) {
+        null
+    }
 
     override fun loadSearch(query: String, types: Set<AudioSearchResult.Type>): AudioSearchResult? {
         val result = httpInterfaceManager.`interface`.use {
@@ -72,7 +95,7 @@ class YoutubeSearchManager(
                     val url = item.navigationEndpoint.toUrl()
                     val artist = item.flexColumns.getOrNull(1)
                         ?.musicResponsiveListItemFlexColumnRenderer
-                        ?.text?.joinRuns() ?: "Unknown Author"
+                        ?.text?.runs?.getOrNull(2)?.text ?: "Unknown Author"
                     if (item.navigationEndpoint.watchEndpoint != null) {
                         val info = AudioTrackInfo(
                             item.flexColumns.first().musicResponsiveListItemFlexColumnRenderer.text.joinRuns(),
@@ -84,7 +107,7 @@ class YoutubeSearchManager(
                             thumbnail,
                             null
                         )
-                        YoutubeAudioTrack(info, sourceManager())
+                        YoutubeAudioTrack(info, playerManager().source(YoutubeAudioSourceManager::class.java))
                     } else if (item.navigationEndpoint.browseEndpoint != null) {
                         val type =
                             item.navigationEndpoint.browseEndpoint.browseEndpointContextSupportedConfigs.browseEndpointContextMusicConfig.pageType
@@ -109,6 +132,16 @@ class YoutubeSearchManager(
                                 artist,
                                 null
                             )
+
+                            PageType.MUSIC_PAGE_TYPE_PLAYLIST -> ExtendedAudioPlaylist(
+                                name,
+                                emptyList(),
+                                ExtendedAudioPlaylist.Type.PLAYLIST,
+                                url,
+                                thumbnail,
+                                artist,
+                                null
+                            )
                         }
                     } else {
                         null
@@ -123,7 +156,7 @@ class YoutubeSearchManager(
             items.filter<AudioTrack>(AudioSearchResult.Type.TRACK in finalTypes),
             items.filter(AudioSearchResult.Type.ALBUM in finalTypes, ExtendedAudioPlaylist.Type.ALBUM),
             items.filter(AudioSearchResult.Type.ARTIST in finalTypes, ExtendedAudioPlaylist.Type.ARTIST),
-            emptyList(),
+            items.filter(AudioSearchResult.Type.PLAYLIST in finalTypes, ExtendedAudioPlaylist.Type.PLAYLIST),
             items.filter<AudioText>(AudioSearchResult.Type.TEXT in finalTypes),
         )
     }

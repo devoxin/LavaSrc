@@ -1,15 +1,17 @@
 package com.github.topi314.lavasrc.plugin;
 
+import com.github.topi314.lavalyrics.LyricsManager;
+import com.github.topi314.lavalyrics.api.LyricsManagerConfiguration;
 import com.github.topi314.lavasearch.SearchManager;
 import com.github.topi314.lavasearch.api.SearchManagerConfiguration;
 import com.github.topi314.lavasrc.applemusic.AppleMusicSourceManager;
 import com.github.topi314.lavasrc.deezer.DeezerAudioSourceManager;
 import com.github.topi314.lavasrc.flowerytts.FloweryTTSSourceManager;
+import com.github.topi314.lavasrc.mirror.DefaultMirroringAudioTrackResolver;
 import com.github.topi314.lavasrc.spotify.SpotifySourceManager;
 import com.github.topi314.lavasrc.yandexmusic.YandexMusicSourceManager;
 import com.github.topi314.lavasrc.youtube.YoutubeSearchManager;
 import com.sedmelluq.discord.lavaplayer.player.AudioPlayerManager;
-import com.sedmelluq.discord.lavaplayer.source.youtube.YoutubeAudioSourceManager;
 import dev.arbjerg.lavalink.api.AudioPlayerManagerConfiguration;
 import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
@@ -17,12 +19,13 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 @Service
-public class LavaSrcPlugin implements AudioPlayerManagerConfiguration, SearchManagerConfiguration {
+public class LavaSrcPlugin implements AudioPlayerManagerConfiguration, SearchManagerConfiguration, LyricsManagerConfiguration {
 
 	private static final Logger log = LoggerFactory.getLogger(LavaSrcPlugin.class);
 
+	private final SourcesConfig sourcesConfig;
+	private final LyricsSourcesConfig lyricsSourcesConfig;
 	private AudioPlayerManager manager;
-	private YoutubeAudioSourceManager youtubeAudioSourceManager;
 	private SpotifySourceManager spotify;
 	private AppleMusicSourceManager appleMusic;
 	private DeezerAudioSourceManager deezer;
@@ -30,11 +33,13 @@ public class LavaSrcPlugin implements AudioPlayerManagerConfiguration, SearchMan
 	private FloweryTTSSourceManager flowerytts;
 	private YoutubeSearchManager youtube;
 
-	public LavaSrcPlugin(LavaSrcConfig pluginConfig, SourcesConfig sourcesConfig, SpotifyConfig spotifyConfig, AppleMusicConfig appleMusicConfig, DeezerConfig deezerConfig, YandexMusicConfig yandexMusicConfig, FloweryTTSConfig floweryTTSConfig) {
+	public LavaSrcPlugin(LavaSrcConfig pluginConfig, SourcesConfig sourcesConfig, LyricsSourcesConfig lyricsSourcesConfig, SpotifyConfig spotifyConfig, AppleMusicConfig appleMusicConfig, DeezerConfig deezerConfig, YandexMusicConfig yandexMusicConfig, FloweryTTSConfig floweryTTSConfig, YouTubeConfig youTubeConfig) {
 		log.info("Loading LavaSrc plugin...");
+		this.sourcesConfig = sourcesConfig;
+		this.lyricsSourcesConfig = lyricsSourcesConfig;
 
-		if (sourcesConfig.isSpotify()) {
-			this.spotify = new SpotifySourceManager(pluginConfig.getProviders(), spotifyConfig.getClientId(), spotifyConfig.getClientSecret(), spotifyConfig.getCountryCode(), unused -> manager);
+		if (sourcesConfig.isSpotify() || lyricsSourcesConfig.isSpotify()) {
+			this.spotify = new SpotifySourceManager(spotifyConfig.getClientId(), spotifyConfig.getClientSecret(), spotifyConfig.getSpDc(), spotifyConfig.getCountryCode(), unused -> manager, new DefaultMirroringAudioTrackResolver(pluginConfig.getProviders()));
 			if (spotifyConfig.getPlaylistLoadLimit() > 0) {
 				this.spotify.setPlaylistPageLimit(spotifyConfig.getPlaylistLoadLimit());
 			}
@@ -51,11 +56,20 @@ public class LavaSrcPlugin implements AudioPlayerManagerConfiguration, SearchMan
 				appleMusic.setAlbumPageLimit(appleMusicConfig.getAlbumLoadLimit());
 			}
 		}
-		if (sourcesConfig.isDeezer()) {
+		if (sourcesConfig.isDeezer() || lyricsSourcesConfig.isDeezer()) {
 			this.deezer = new DeezerAudioSourceManager(deezerConfig.getMasterDecryptionKey());
 		}
 		if (sourcesConfig.isYandexMusic()) {
 			this.yandexMusic = new YandexMusicSourceManager(yandexMusicConfig.getAccessToken());
+			if (yandexMusicConfig.getPlaylistLoadLimit() > 0) {
+				yandexMusic.setPlaylistLoadLimit(yandexMusicConfig.getPlaylistLoadLimit());
+			}
+			if (yandexMusicConfig.getAlbumLoadLimit() > 0) {
+				yandexMusic.setAlbumLoadLimit(yandexMusicConfig.getAlbumLoadLimit());
+			}
+			if (yandexMusicConfig.getArtistLoadLimit() > 0) {
+				yandexMusic.setArtistLoadLimit(yandexMusicConfig.getArtistLoadLimit());
+			}
 		}
 		if (sourcesConfig.isFloweryTTS()) {
 			this.flowerytts = new FloweryTTSSourceManager(floweryTTSConfig.getVoice());
@@ -72,8 +86,22 @@ public class LavaSrcPlugin implements AudioPlayerManagerConfiguration, SearchMan
 				this.flowerytts.setAudioFormat(floweryTTSConfig.getAudioFormat());
 			}
 		}
-		if (sourcesConfig.isYoutube()) {
-			this.youtube = new YoutubeSearchManager(() -> youtubeAudioSourceManager);
+		if (sourcesConfig.isYoutube() || lyricsSourcesConfig.isYoutube()) {
+			if (hasNewYoutubeSource()) {
+				log.info("Registering Youtube Source audio source manager...");
+				this.youtube = new YoutubeSearchManager(() -> manager, youTubeConfig.getCountryCode());
+			} else {
+				throw new IllegalStateException("Youtube LavaSearch requires the new Youtube Source plugin to be enabled.");
+			}
+		}
+	}
+
+	private boolean hasNewYoutubeSource() {
+		try {
+			Class.forName("dev.lavalink.youtube.YoutubeAudioSourceManager");
+			return true;
+		} catch (ClassNotFoundException ignored) {
+			return false;
 		}
 	}
 
@@ -81,7 +109,7 @@ public class LavaSrcPlugin implements AudioPlayerManagerConfiguration, SearchMan
 	@Override
 	public AudioPlayerManager configure(@NotNull AudioPlayerManager manager) {
 		this.manager = manager;
-		if (this.spotify != null) {
+		if (this.spotify != null && this.sourcesConfig.isSpotify()) {
 			log.info("Registering Spotify audio source manager...");
 			manager.registerSourceManager(this.spotify);
 		}
@@ -89,7 +117,7 @@ public class LavaSrcPlugin implements AudioPlayerManagerConfiguration, SearchMan
 			log.info("Registering Apple Music audio source manager...");
 			manager.registerSourceManager(this.appleMusic);
 		}
-		if (this.deezer != null) {
+		if (this.deezer != null && this.sourcesConfig.isDeezer()) {
 			log.info("Registering Deezer audio source manager...");
 			manager.registerSourceManager(this.deezer);
 		}
@@ -101,36 +129,50 @@ public class LavaSrcPlugin implements AudioPlayerManagerConfiguration, SearchMan
 			log.info("Registering Flowery TTS audio source manager...");
 			manager.registerSourceManager(this.flowerytts);
 		}
-		if (this.youtube != null) {
-			this.youtubeAudioSourceManager = manager.source(YoutubeAudioSourceManager.class);
-			if (this.youtubeAudioSourceManager == null) {
-				throw new IllegalStateException("Youtube LavaSearch requires YoutubeAudioSourceManager to be enabled.");
-			}
-
-		}
 		return manager;
 	}
 
 	@Override
 	@NotNull
 	public SearchManager configure(@NotNull SearchManager manager) {
-		if (this.spotify != null) {
+		if (this.spotify != null && this.sourcesConfig.isSpotify()) {
 			log.info("Registering Spotify search manager...");
 			manager.registerSearchManager(this.spotify);
 		}
-		if (this.appleMusic != null) {
+		if (this.appleMusic != null && this.sourcesConfig.isAppleMusic()) {
 			log.info("Registering Apple Music search manager...");
 			manager.registerSearchManager(this.appleMusic);
 		}
-		if (this.deezer != null) {
+		if (this.deezer != null && this.sourcesConfig.isDeezer()) {
 			log.info("Registering Deezer search manager...");
 			manager.registerSearchManager(this.deezer);
 		}
-		if (this.youtube != null) {
+		if (this.youtube != null && this.sourcesConfig.isYoutube()) {
 			log.info("Registering Youtube search manager...");
 			manager.registerSearchManager(this.youtube);
 		}
 		return manager;
 	}
 
+	@NotNull
+	@Override
+	public LyricsManager configure(@NotNull LyricsManager manager) {
+		if (this.spotify != null && this.lyricsSourcesConfig.isSpotify()) {
+			log.info("Registering Spotify lyrics manager...");
+			manager.registerLyricsManager(this.spotify);
+		}
+		if (this.deezer != null && this.lyricsSourcesConfig.isDeezer()) {
+			log.info("Registering Deezer lyrics manager...");
+			manager.registerLyricsManager(this.deezer);
+		}
+		if (this.youtube != null && this.lyricsSourcesConfig.isYoutube()) {
+			log.info("Registering YouTube lyrics manager...");
+			manager.registerLyricsManager(this.youtube);
+		}
+		if (this.yandexMusic != null && this.lyricsSourcesConfig.isYandexMusic()) {
+			log.info("Registering Yandex Music lyrics manager");
+			manager.registerLyricsManager(this.yandexMusic);
+		}
+		return manager;
+	}
 }

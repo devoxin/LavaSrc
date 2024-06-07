@@ -9,9 +9,10 @@ public class SpotifyConfig {
 
 	private String clientId;
 	private String clientSecret;
-	private String countryCode;
-	private int playlistLoadLimit;
-	private int albumLoadLimit;
+	private String spDc;
+	private String countryCode = "US";
+	private int playlistLoadLimit = 6;
+	private int albumLoadLimit = 6;
 
 	public String getClientId() {
 		return this.clientId;
@@ -27,6 +28,14 @@ public class SpotifyConfig {
 
 	public void setClientSecret(String clientSecret) {
 		this.clientSecret = clientSecret;
+	}
+
+	public String getSpDc() {
+		return this.spDc;
+	}
+
+	public void setSpDc(String spDc) {
+		this.spDc = spDc;
 	}
 
 	public String getCountryCode() {
